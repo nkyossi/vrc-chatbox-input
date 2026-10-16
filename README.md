@@ -46,9 +46,11 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Test
 実際のキー入力をためすテストは、VRChat のかわりの窓をひらいて SendInput で打ちます。実行中はキーボードとマウスにさわらないでください。
 
 ```powershell
-$b = "$env:LOCALAPPDATA\vrc-chatbox-input-build"
-& "$b\e2e_test.exe" "$b\vrc-chatbox-input.exe"
+powershell -ExecutionPolicy Bypass -File tools\run-e2e.ps1        # 窓のひらきかた・送信・Esc など
+powershell -ExecutionPolicy Bypass -File tools\run-e2e.ps1 -Ime   # ひらがなIMEで、カーソルを動かしたあとも変換できるか
 ```
+
+`-Ime` のときは、ひらがなIMEの設定を一時的にローマ字入力にして、おわったらもとにもどします。
 
 ## しくみ
 
