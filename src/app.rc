@@ -1,0 +1,27 @@
+#include <windows.h>
+#include "resource.h"
+
+#pragma code_page(65001)
+
+IDI_APP ICON "app.ico"
+1 RT_MANIFEST "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION APP_VERSION_RC
+PRODUCTVERSION APP_VERSION_RC
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041104B0"
+        BEGIN
+            VALUE "FileDescription", "VRChat チャット入力"
+            VALUE "FileVersion", APP_VERSION_STR
+            VALUE "ProductName", "VRChat Chatbox Input"
+            VALUE "ProductVersion", APP_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x411, 1200
+    END
+END
