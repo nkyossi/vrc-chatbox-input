@@ -41,6 +41,8 @@ constexpr UINT ID_TRAY_QUIT = 2;
 constexpr UINT kTriggerKey = 'Y';
 constexpr int kMaxChars = 144;  // the limit of the chatbox
 const wchar_t kTitle[] = L"VRChat チャット入力";
+constexpr COLORREF kBackground = RGB(255, 255, 255);
+constexpr COLORREF kText = RGB(20, 20, 20);
 
 struct Options {
     std::wstring target = L"VRChat.exe";
@@ -194,6 +196,13 @@ void show_popup(HWND target) {
     g_font = CreateFontW(-scale(20), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
     SendMessageW(g_edit, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+    // WM_SETFONT resets the character format; set the color after it.
+    CHARFORMAT2W format = {};
+    format.cbSize = sizeof format;
+    format.dwMask = CFM_COLOR;
+    format.crTextColor = kText;
+    SendMessageW(g_edit, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
+    SendMessageW(g_edit, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&format));
     SetWindowPos(g_popup, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
     int pad = scale(8);
     SetWindowPos(g_edit, nullptr, pad, pad, width - 2 * pad, height - 2 * pad, SWP_NOZORDER);
@@ -328,7 +337,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     wc.hInstance = instance;
     wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP));
     wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
-    wc.hbrBackground = CreateSolidBrush(RGB(32, 32, 36));
+    wc.hbrBackground = CreateSolidBrush(kBackground);
     wc.lpszClassName = L"VRChatChatboxInput";
     RegisterClassW(&wc);
     g_popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, kTitle, WS_POPUP | WS_BORDER, 0, 0,
@@ -339,12 +348,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SendMessageW(g_edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
     SendMessageW(g_edit, EM_SETLANGOPTIONS, 0, 0);
     SendMessageW(g_edit, EM_EXLIMITTEXT, 0, kMaxChars);
-    SendMessageW(g_edit, EM_SETBKGNDCOLOR, 0, RGB(32, 32, 36));
-    CHARFORMAT2W format = {};
-    format.cbSize = sizeof format;
-    format.dwMask = CFM_COLOR;
-    format.crTextColor = RGB(240, 240, 240);
-    SendMessageW(g_edit, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
+    // Light, so that the text being converted, which the IMEs show with
+    // their own colors, is easy to read.
+    SendMessageW(g_edit, EM_SETBKGNDCOLOR, 0, kBackground);
     SetWindowSubclass(g_edit, edit_proc, 1, 0);
 
     g_tray.hWnd = g_popup;
