@@ -10,7 +10,11 @@
 // lower part of VRChat instead of the chatbox of the game. Enter sends the
 // text and goes back to VRChat; Esc cancels.
 //
+// The window uses Hiragana IME when it is installed, whatever IME is chosen
+// for the other apps (in VRChat it is usually Microsoft IME).
+//
 //   vrc-chatbox-input.exe [--target VRChat.exe] [--port 9000] [--no-cursor-check] [--no-ime-open]
+//                         [--keep-ime]
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -43,6 +47,7 @@ constexpr UINT WM_APP_TRAY = WM_APP + 2;
 constexpr UINT ID_TRAY_ENABLED = 1;
 constexpr UINT ID_TRAY_QUIT = 2;
 constexpr UINT kTriggerKey = 'Y';
+constexpr UINT_PTR kOpenImeTimer = 1;
 constexpr int kMaxChars = 144;  // the limit of the chatbox
 const wchar_t kTitle[] = L"VRChat チャット入力";
 constexpr COLORREF kBackground = RGB(24, 24, 28);
@@ -52,8 +57,13 @@ struct Options {
     std::wstring target = L"VRChat.exe";
     int port = 9000;
     bool cursor_check = true;
-    bool ime_open = true;  // turn the IME on when the window opens
+    bool ime_open = true;        // turn the IME on when the window opens
+    bool hiragana_ime = true;    // switch to Hiragana IME when the window opens
 } g_options;
+
+// Hiragana IME for Windows (https://github.com/nkyossi/hiragana-ime-for-windows)
+constexpr CLSID kHiraganaImeClsid = {0x1c841c5a, 0x1337, 0x4e4e, {0xbc, 0x44, 0x5b, 0x0e, 0xa1, 0x76, 0x90, 0x18}};
+constexpr GUID kHiraganaImeProfile = {0xc27534cd, 0x9a44, 0x4271, {0xbd, 0xde, 0xe9, 0xfc, 0x24, 0x6a, 0x1d, 0xd5}};
 
 HINSTANCE g_instance = nullptr;
 HWND g_popup = nullptr;
@@ -143,6 +153,22 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wparam, LPARAM lparam) {
     return CallNextHookEx(g_hook, code, wparam, lparam);
 }
 
+// Makes Hiragana IME the IME of this process, if it is installed; returns
+// true if it has switched to it now.
+bool use_hiragana_ime() {
+    ComPtr<ITfInputProcessorProfileMgr> profiles;
+    if (FAILED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&profiles))))
+        return false;
+    TF_INPUTPROCESSORPROFILE active = {};
+    if (SUCCEEDED(profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &active)) &&
+        IsEqualCLSID(active.clsid, kHiraganaImeClsid))
+        return false;
+    return SUCCEEDED(profiles->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, MAKELANGID(LANG_JAPANESE, SUBLANG_JAPANESE_JAPAN),
+                              kHiraganaImeClsid, kHiraganaImeProfile, nullptr,
+                              TF_IPPMF_FORPROCESS | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE));
+}
+
 // Turns the IME on (あ) for the window: the open/close compartment of the
 // thread, as the 半角/全角 key does.
 void open_ime() {
@@ -215,7 +241,13 @@ void show_popup(HWND target) {
     bring_to_front(g_popup);
     g_showing = false;
     SetFocus(g_edit);
-    if (g_options.ime_open) open_ime();
+    bool switched = g_options.hiragana_ime && use_hiragana_ime();
+    if (g_options.ime_open) {
+        open_ime();
+        // A text service that has just started sets its own initial mode;
+        // turn it on again after that.
+        if (switched) SetTimer(g_popup, kOpenImeTimer, 300, nullptr);
+    }
     send_osc(vrcinput::chatbox_typing(true));
 }
 
@@ -333,6 +365,12 @@ LRESULT CALLBACK popup_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             // Clicking elsewhere cancels, as Esc does.
             if (LOWORD(wparam) == WA_INACTIVE && !g_showing) hide_popup(false);
             break;
+        case WM_TIMER:
+            if (wparam == kOpenImeTimer) {
+                KillTimer(hwnd, kOpenImeTimer);
+                if (IsWindowVisible(hwnd)) open_ime();
+            }
+            return 0;
         case WM_SETFOCUS:
             SetFocus(g_edit);
             return 0;
@@ -360,6 +398,8 @@ void parse_options() {
             g_options.cursor_check = false;
         } else if (a == L"--no-ime-open") {
             g_options.ime_open = false;
+        } else if (a == L"--keep-ime") {
+            g_options.hiragana_ime = false;
         }
     }
     LocalFree(argv);

@@ -11,6 +11,7 @@ VRChat は Easy Anti-Cheat で守られていて、Microsoft IME など一部の
 3. VRChat で歩いたり見回したりしているときに **Y** キーをおすと、VRChat の画面の下のほうに入力欄が出ます。
 4. 文字を入力して **Enter** をおすと、チャットボックスに送られて、VRChat の操作にもどります。**Esc** でとりやめます。
 
+- 入力欄では、[ひらがなIME for Windows](https://github.com/nkyossi/hiragana-ime-for-windows) が入っていれば、ほかのアプリでえらんでいる IME（VRChat ではふつう Microsoft IME）にかかわらず、ひらがなIMEをつかいます（`--keep-ime` でそのまま）。
 - 入力欄をひらくと、IME を自動でオン（あ）にします。
 - 入力欄をひらいているあいだは、頭の上に「入力中」の表示が出ます。
 - 送ったときは、このアプリが小さな音を鳴らします（VRChat の通知音も鳴ります）。
@@ -21,7 +22,7 @@ VRChat は Easy Anti-Cheat で守られていて、Microsoft IME など一部の
 ## オプション
 
 ```
-vrc-chatbox-input.exe [--target VRChat.exe] [--port 9000] [--no-cursor-check] [--no-ime-open]
+vrc-chatbox-input.exe [--target VRChat.exe] [--port 9000] [--no-cursor-check] [--no-ime-open] [--keep-ime]
 ```
 
 | オプション | 意味 |
@@ -30,6 +31,7 @@ vrc-chatbox-input.exe [--target VRChat.exe] [--port 9000] [--no-cursor-check] [-
 | `--port` | OSC の送り先のポート（既定: 9000） |
 | `--no-cursor-check` | カーソルが見えていても Y で入力欄をひらく |
 | `--no-ime-open` | 入力欄をひらいたときに IME をオンにしない |
+| `--keep-ime` | ひらがなIMEに切りかえず、いまの IME をつかう |
 
 ## ビルド
 
