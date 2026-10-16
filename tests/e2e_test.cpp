@@ -3,7 +3,11 @@
 // receives the OSC messages on a UDP port. Do not touch the keyboard or the
 // mouse while it runs.
 //
-//   e2e_test <vrc-chatbox-input.exe>
+//   e2e_test <vrc-chatbox-input.exe> [--ime]
+//
+// --ime checks the window with Hiragana IME and its romaji layout instead
+// (tools\run-e2e.ps1 -Ime sets the layout): the text before the cursor can
+// be converted after the cursor has moved.
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -41,6 +45,19 @@ void key(WORD vk, bool up) {
 void tap(WORD vk) {
     key(vk, false);
     key(vk, true);
+}
+
+// Characters that the IMEs leave alone (VK_PACKET), whatever IME is active.
+void type_text(const wchar_t* s) {
+    for (; *s; ++s) {
+        INPUT in[2] = {};
+        in[0].type = in[1].type = INPUT_KEYBOARD;
+        in[0].ki.wScan = in[1].ki.wScan = *s;
+        in[0].ki.dwFlags = KEYEVENTF_UNICODE;
+        in[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        SendInput(2, in, sizeof(INPUT));
+        Sleep(30);
+    }
 }
 
 void type(const char* s) {
@@ -85,6 +102,31 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
+bool g_ime = false;
+
+void run_ime() {
+    tap('Y');
+    Sleep(1500);  // Hiragana IME starts and is turned on
+    check("Y opens the window", popup() != nullptr);
+    receive(200);
+    type("kanji");
+    tap(VK_LEFT);
+    tap(VK_RIGHT);
+    tap(VK_SPACE);  // converts the text before the cursor
+    Sleep(300);
+    tap(VK_RETURN);  // confirms
+    Sleep(300);
+    tap(VK_RETURN);  // sends
+    Sleep(500);
+    std::string got = receive(500);
+    check("the text before the cursor is converted after moving the cursor",
+          got.find(u8"/chatbox/input||,sTT||||漢字|") != std::string::npos, got);
+    if (popup()) tap(VK_ESCAPE);
+    std::printf("%d failure(s)\n", g_failures);
+    std::fflush(stdout);
+    PostMessageW(g_window, WM_CLOSE, 0, 0);
+}
+
 void run() {
     Sleep(1500);
     // Share the input state with the window's thread so that this thread may
@@ -95,6 +137,10 @@ void run() {
     Sleep(300);
     check("the stand-in is in front", GetForegroundWindow() == g_window);
     receive(100);
+    if (g_ime) {
+        run_ime();
+        return;
+    }
 
     tap('Y');
     Sleep(800);
@@ -104,7 +150,7 @@ void run() {
     std::string got = receive(300);
     check("typing indicator on", got.find("/chatbox/typing|,T") != std::string::npos, got);
 
-    type("hello world");
+    type_text(L"hello world");
     tap(VK_RETURN);
     Sleep(500);
     got = receive(500);
@@ -116,7 +162,7 @@ void run() {
 
     tap('Y');
     Sleep(800);
-    type("abc");
+    type_text(L"abc");
     tap(VK_ESCAPE);
     Sleep(500);
     got = receive(500);
@@ -124,12 +170,12 @@ void run() {
     check("Esc sends nothing", got.find("/chatbox/input") == std::string::npos, got);
     check("Esc goes back to the game", GetForegroundWindow() == g_window);
 
-    // Shift+Y is not the trigger.
+    // Shift+Y is not the trigger. (What reaches the game depends on its IME.)
     key(VK_SHIFT, false);
     tap('Y');
     key(VK_SHIFT, true);
     Sleep(500);
-    check("Shift+Y reaches the game", popup() == nullptr && g_typed == L"Y");
+    check("Shift+Y does not open the window", popup() == nullptr);
 
     std::printf("%d failure(s)\n", g_failures);
     std::fflush(stdout);
@@ -143,6 +189,7 @@ int main(int argc, char** argv) {
         std::printf("usage: e2e_test <vrc-chatbox-input.exe>\n");
         return 2;
     }
+    g_ime = argc > 2 && std::string(argv[2]) == "--ime";
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
     g_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -168,7 +215,7 @@ int main(int argc, char** argv) {
     GetModuleFileNameA(nullptr, self, MAX_PATH);
     const char* name = strrchr(self, '\\');
     std::string command = std::string("\"") + argv[1] + "\" --target " + (name ? name + 1 : self) + " --port " +
-                          std::to_string(kPort) + " --no-cursor-check --no-ime-open";
+                          std::to_string(kPort) + " --no-cursor-check" + (g_ime ? "" : " --no-ime-open --keep-ime");
     STARTUPINFOA si = {sizeof si};
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessA(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {

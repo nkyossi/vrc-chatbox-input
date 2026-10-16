@@ -169,24 +169,33 @@ bool use_hiragana_ime() {
                               TF_IPPMF_FORPROCESS | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE));
 }
 
+// The thread manager of TSF, activated once for the life of the program.
+// Deactivating it would also take the document of the RichEdit control away
+// from TSF, and the IME would then treat the window like an old program that
+// does not show it the text (no conversion of the text before the cursor).
+ComPtr<ITfThreadMgr> g_thread_mgr;
+TfClientId g_client_id = TF_CLIENTID_NULL;
+
+void activate_tsf() {
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_thread_mgr))) &&
+        FAILED(g_thread_mgr->Activate(&g_client_id)))
+        g_thread_mgr.Reset();
+}
+
 // Turns the IME on (あ) for the window: the open/close compartment of the
 // thread, as the 半角/全角 key does.
 void open_ime() {
-    ComPtr<ITfThreadMgr> thread_mgr;
-    if (FAILED(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&thread_mgr)))) return;
+    if (!g_thread_mgr) return;
     ComPtr<ITfCompartmentMgr> compartments;
     ComPtr<ITfCompartment> open;
-    if (FAILED(thread_mgr.As(&compartments)) ||
+    if (FAILED(g_thread_mgr.As(&compartments)) ||
         FAILED(compartments->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &open)))
         return;
-    TfClientId client = TF_CLIENTID_NULL;
-    if (FAILED(thread_mgr->Activate(&client))) return;
     VARIANT v;
     VariantInit(&v);
     v.vt = VT_I4;
     v.lVal = 1;
-    open->SetValue(client, &v);
-    thread_mgr->Deactivate();
+    open->SetValue(g_client_id, &v);
 }
 
 void bring_to_front(HWND hwnd) {
@@ -422,6 +431,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         inet_pton(AF_INET, "127.0.0.1", &g_address.sin_addr);
     }
 
+    activate_tsf();
     LoadLibraryW(L"msftedit.dll");
     WNDCLASSW wc = {};
     wc.lpfnWndProc = popup_proc;
@@ -458,6 +468,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&msg);
     }
     if (g_hook) UnhookWindowsHookEx(g_hook);
+    if (g_thread_mgr) g_thread_mgr->Deactivate();
     if (g_socket != INVALID_SOCKET) closesocket(g_socket);
     WSACleanup();
     CoUninitialize();
