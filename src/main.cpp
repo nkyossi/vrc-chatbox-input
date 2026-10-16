@@ -23,7 +23,11 @@
 #include <shellapi.h>
 #include <wrl/client.h>
 
+#include <mmsystem.h>
+
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -41,8 +45,8 @@ constexpr UINT ID_TRAY_QUIT = 2;
 constexpr UINT kTriggerKey = 'Y';
 constexpr int kMaxChars = 144;  // the limit of the chatbox
 const wchar_t kTitle[] = L"VRChat チャット入力";
-constexpr COLORREF kBackground = RGB(255, 255, 255);
-constexpr COLORREF kText = RGB(20, 20, 20);
+constexpr COLORREF kBackground = RGB(24, 24, 28);
+constexpr COLORREF kText = RGB(245, 245, 245);
 
 struct Options {
     std::wstring target = L"VRChat.exe";
@@ -228,6 +232,50 @@ void hide_popup(bool back_to_target) {
     send_osc(vrcinput::chatbox_typing(false));
 }
 
+// A short, quiet blip in WAV format, played when the text is sent.
+const std::vector<uint8_t>& send_sound() {
+    static const std::vector<uint8_t> wav = [] {
+        const uint32_t rate = 44100;
+        const uint32_t samples = rate * 70 / 1000;
+        std::vector<int16_t> pcm(samples);
+        const double pi = 3.14159265358979;
+        double phase = 0;
+        for (uint32_t i = 0; i < samples; ++i) {
+            double t = static_cast<double>(i) / samples;
+            double frequency = 880 + 660 * t;  // rising
+            phase += 2 * pi * frequency / rate;
+            double envelope = std::min(1.0, t * 20) * (1 - t) * (1 - t);
+            pcm[i] = static_cast<int16_t>(std::sin(phase) * envelope * 0.18 * 32767);
+        }
+        auto u32 = [](std::vector<uint8_t>& v, uint32_t x) {
+            for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>(x >> (8 * i)));
+        };
+        auto u16 = [](std::vector<uint8_t>& v, uint16_t x) {
+            v.push_back(static_cast<uint8_t>(x));
+            v.push_back(static_cast<uint8_t>(x >> 8));
+        };
+        std::vector<uint8_t> v;
+        uint32_t data = samples * 2;
+        v.insert(v.end(), {'R', 'I', 'F', 'F'});
+        u32(v, 36 + data);
+        v.insert(v.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+        u32(v, 16);
+        u16(v, 1);  // PCM
+        u16(v, 1);  // mono
+        u32(v, rate);
+        u32(v, rate * 2);
+        u16(v, 2);
+        u16(v, 16);
+        v.insert(v.end(), {'d', 'a', 't', 'a'});
+        u32(v, data);
+        size_t at = v.size();
+        v.resize(at + data);
+        std::memcpy(v.data() + at, pcm.data(), data);
+        return v;
+    }();
+    return wav;
+}
+
 void send_text() {
     int n = GetWindowTextLengthW(g_edit);
     std::wstring text(static_cast<size_t>(n), L'\0');
@@ -236,7 +284,10 @@ void send_text() {
     size_t first = text.find_first_not_of(L" \t\r\n\x3000");
     size_t last = text.find_last_not_of(L" \t\r\n\x3000");
     text = first == std::wstring::npos ? std::wstring() : text.substr(first, last - first + 1);
-    if (!text.empty()) send_osc(vrcinput::chatbox_input(to_utf8(text), true, true));
+    if (!text.empty()) {
+        send_osc(vrcinput::chatbox_input(to_utf8(text), true, true));
+        PlaySoundW(reinterpret_cast<LPCWSTR>(send_sound().data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
     hide_popup(true);
 }
 
@@ -348,8 +399,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SendMessageW(g_edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
     SendMessageW(g_edit, EM_SETLANGOPTIONS, 0, 0);
     SendMessageW(g_edit, EM_EXLIMITTEXT, 0, kMaxChars);
-    // Light, so that the text being converted, which the IMEs show with
-    // their own colors, is easy to read.
     SendMessageW(g_edit, EM_SETBKGNDCOLOR, 0, kBackground);
     SetWindowSubclass(g_edit, edit_proc, 1, 0);
 
