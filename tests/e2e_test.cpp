@@ -105,23 +105,28 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 bool g_ime = false;
 
 void run_ime() {
-    tap('Y');
-    Sleep(1500);  // Hiragana IME starts and is turned on
-    check("Y opens the window", popup() != nullptr);
-    receive(200);
-    type("kanji");
-    tap(VK_LEFT);
-    tap(VK_RIGHT);
-    tap(VK_SPACE);  // converts the text before the cursor
-    Sleep(300);
-    tap(VK_RETURN);  // confirms
-    Sleep(300);
-    tap(VK_RETURN);  // sends
-    Sleep(500);
-    std::string got = receive(500);
-    check("the text before the cursor is converted after moving the cursor",
-          got.find(u8"/chatbox/input||,sTT||||漢字|") != std::string::npos, got);
-    if (popup()) tap(VK_ESCAPE);
+    // Twice: the window must work the same when it is opened again.
+    for (int round = 1; round <= 2; ++round) {
+        tap('Y');
+        Sleep(1500);  // Hiragana IME starts and is turned on
+        check("Y opens the window", popup() != nullptr);
+        receive(200);
+        type("kanji");
+        tap(VK_LEFT);
+        tap(VK_RIGHT);
+        tap(VK_SPACE);  // converts the text before the cursor
+        Sleep(300);
+        tap(VK_RETURN);  // confirms
+        Sleep(300);
+        tap(VK_RETURN);  // sends
+        Sleep(500);
+        std::string got = receive(500);
+        check(round == 1 ? "the text before the cursor is converted after moving the cursor"
+                         : "... also when the window is opened again",
+              got.find(u8"/chatbox/input||,sTT||||漢字|") != std::string::npos, got);
+        if (popup()) tap(VK_ESCAPE);
+        Sleep(500);
+    }
     std::printf("%d failure(s)\n", g_failures);
     std::fflush(stdout);
     PostMessageW(g_window, WM_CLOSE, 0, 0);

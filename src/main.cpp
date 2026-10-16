@@ -249,6 +249,11 @@ void show_popup(HWND target) {
     g_showing = true;
     bring_to_front(g_popup);
     g_showing = false;
+    // The edit control may still have the focus from the last time; then
+    // SetFocus() does nothing, the control does not give its document to TSF
+    // again, and the IME cannot read the text before the cursor. Move the
+    // focus away and back.
+    SetFocus(nullptr);
     SetFocus(g_edit);
     bool switched = g_options.hiragana_ime && use_hiragana_ime();
     if (g_options.ime_open) {
