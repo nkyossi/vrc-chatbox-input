@@ -11,7 +11,7 @@ if(MSVC)
 endif()
 
 add_executable(vrc-chatbox-input WIN32 src/main.cpp src/app.rc)
-target_link_libraries(vrc-chatbox-input PRIVATE ws2_32 comctl32 shell32 ole32 user32 gdi32 winmm)
+target_link_libraries(vrc-chatbox-input PRIVATE ws2_32 comctl32 shell32 ole32 user32 gdi32 winmm advapi32)
 target_compile_definitions(vrc-chatbox-input PRIVATE
     APP_VERSION_STR="${PROJECT_VERSION}"
     APP_VERSION_RC=${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0)

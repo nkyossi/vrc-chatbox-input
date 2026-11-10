@@ -182,6 +182,28 @@ void run() {
     Sleep(500);
     check("Shift+Y does not open the window", popup() == nullptr);
 
+    // Ctrl+Alt+Y turns the trigger key off, so Y goes to the game again.
+    const auto toggle = [] {
+        key(VK_CONTROL, false);
+        key(VK_MENU, false);
+        tap('Y');
+        key(VK_MENU, true);
+        key(VK_CONTROL, true);
+        Sleep(300);
+    };
+    g_typed.clear();
+    toggle();
+    check("Ctrl+Alt+Y does not open the window", popup() == nullptr);
+    tap('Y');
+    Sleep(300);
+    check("Y reaches the game while the trigger key is off", g_typed == L"y", std::to_string(g_typed.size()) + " chars");
+    toggle();
+    tap('Y');
+    Sleep(800);
+    check("Ctrl+Alt+Y turns the trigger key on again", popup() != nullptr);
+    if (popup()) tap(VK_ESCAPE);
+    Sleep(300);
+
     std::printf("%d failure(s)\n", g_failures);
     std::fflush(stdout);
     PostMessageW(g_window, WM_CLOSE, 0, 0);

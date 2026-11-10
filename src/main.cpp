@@ -10,11 +10,14 @@
 // lower part of VRChat instead of the chatbox of the game. Enter sends the
 // text and goes back to VRChat; Esc cancels.
 //
+// Y goes to VRChat itself while Shift is held, and Ctrl+Alt+Y turns the
+// trigger key off and on for typing Y in the game.
+//
 // The window uses Hiragana IME when it is installed, whatever IME is chosen
 // for the other apps (in VRChat it is usually Microsoft IME).
 //
 //   vrc-chatbox-input.exe [--target VRChat.exe] [--port 9000] [--no-cursor-check] [--no-ime-open]
-//                         [--keep-ime]
+//                         [--keep-ime] [--startup | --no-startup] [--start-menu | --no-start-menu]
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -25,6 +28,7 @@
 #include <msctf.h>
 #include <richedit.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <wrl/client.h>
 
 #include <mmsystem.h>
@@ -44,9 +48,15 @@ namespace {
 
 constexpr UINT WM_APP_SHOW = WM_APP + 1;
 constexpr UINT WM_APP_TRAY = WM_APP + 2;
+constexpr UINT WM_APP_TOGGLE = WM_APP + 3;
+constexpr UINT WM_APP_ALREADY_RUNNING = WM_APP + 4;
 constexpr UINT ID_TRAY_ENABLED = 1;
 constexpr UINT ID_TRAY_QUIT = 2;
+constexpr UINT ID_TRAY_STARTUP = 3;
+constexpr UINT ID_TRAY_SHORTCUT = 4;
 constexpr UINT kTriggerKey = 'Y';
+constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValue[] = L"VRChatChatboxInput";
 constexpr UINT_PTR kOpenImeTimer = 1;
 constexpr int kMaxChars = 144;  // the limit of the chatbox
 const wchar_t kTitle[] = L"VRChat チャット入力";
@@ -59,6 +69,10 @@ struct Options {
     bool cursor_check = true;
     bool ime_open = true;        // turn the IME on when the window opens
     bool hiragana_ime = true;    // switch to Hiragana IME when the window opens
+    bool startup = false;        // only add the sign-in entry, then exit
+    bool no_startup = false;     // only remove it, then exit
+    bool start_menu = false;     // only add the Start menu shortcut, then exit
+    bool no_start_menu = false;  // only remove it, then exit
 } g_options;
 
 // Hiragana IME for Windows (https://github.com/nkyossi/hiragana-ime-for-windows)
@@ -73,10 +87,13 @@ HHOOK g_hook = nullptr;
 HFONT g_font = nullptr;
 bool g_enabled = true;
 bool g_swallow_up = false;  // the release of the trigger key is ours too
+bool g_swallow_toggle_up = false;  // the release of Ctrl+Alt+Y is ours too
 bool g_showing = false;     // in show_popup(): the activation may flicker
 SOCKET g_socket = INVALID_SOCKET;
 sockaddr_in g_address = {};
 NOTIFYICONDATAW g_tray = {sizeof g_tray};
+
+std::wstring g_arguments;  // the options, quoted, for the startup entry
 
 std::string to_utf8(const std::wstring& w) {
     if (w.empty()) return std::string();
@@ -130,11 +147,27 @@ bool any_modifier_down() {
     return false;
 }
 
+// Ctrl+Alt+Y: the trigger key off and on, for typing Y in the game.
+bool toggle_combo_down() {
+    return (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_MENU) & 0x8000);
+}
+
 LRESULT CALLBACK keyboard_hook(int code, WPARAM wparam, LPARAM lparam) {
     if (code == HC_ACTION) {
         const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
         if (key->vkCode == kTriggerKey) {
             bool down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+            if (!down && g_swallow_toggle_up) {
+                g_swallow_toggle_up = false;
+                return 1;
+            }
+            if (down && toggle_combo_down()) {
+                if (!g_swallow_toggle_up) {
+                    g_swallow_toggle_up = true;
+                    PostMessageW(g_popup, WM_APP_TOGGLE, 0, 0);
+                }
+                return 1;
+            }
             if (down && g_swallow_up) return 1;  // auto-repeat
             if (!down && g_swallow_up) {
                 g_swallow_up = false;
@@ -142,7 +175,10 @@ LRESULT CALLBACK keyboard_hook(int code, WPARAM wparam, LPARAM lparam) {
             }
             if (down && g_enabled && !IsWindowVisible(g_popup) && !any_modifier_down()) {
                 HWND foreground = GetForegroundWindow();
-                if (is_target_window(foreground) && (!g_options.cursor_check || is_cursor_hidden())) {
+                // The cursor check is the cheap one; while it is shown, the
+                // game is in a menu or a text field, and there is no need to
+                // look at the process.
+                if ((!g_options.cursor_check || is_cursor_hidden()) && is_target_window(foreground)) {
                     g_swallow_up = true;
                     PostMessageW(g_popup, WM_APP_SHOW, 0, reinterpret_cast<LPARAM>(foreground));
                     return 1;
@@ -353,9 +389,157 @@ LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UI
     return DefSubclassProc(hwnd, msg, wparam, lparam);
 }
 
+// A message in a balloon tip from the tray icon.
+void show_balloon(const wchar_t* text, const wchar_t* tip) {
+    NOTIFYICONDATAW icon = g_tray;
+    icon.uFlags = NIF_TIP | NIF_INFO;
+    icon.dwInfoFlags = NIIF_INFO;
+    wcscpy_s(icon.szTip, tip);
+    wcscpy_s(icon.szInfoTitle, kTitle);
+    wcscpy_s(icon.szInfo, text);
+    Shell_NotifyIconW(NIM_MODIFY, &icon);
+}
+
+void show_balloon(const wchar_t* text) {
+    show_balloon(text, kTitle);
+}
+
+// Starting with Windows
+//
+// The trigger key works only while this program is running, so it should
+// already be there when VRChat starts. An entry under HKCU\...\Run starts it
+// at sign-in, with the same options as the copy that made the entry.
+
+std::wstring exe_path() {
+    wchar_t path[MAX_PATH * 2] = {};
+    DWORD size = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+    return std::wstring(path, size);
+}
+
+std::wstring startup_command() {
+    std::wstring command = L"\"" + exe_path() + L"\"";
+    if (!g_arguments.empty()) command += L" " + g_arguments;
+    return command;
+}
+
+// The command line registered for the sign-in, or empty if there is none.
+std::wstring startup_entry() {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) return std::wstring();
+    wchar_t value[2048] = {};
+    DWORD size = sizeof value;
+    DWORD type = 0;
+    std::wstring command;
+    if (RegQueryValueExW(key, kRunValue, nullptr, &type, reinterpret_cast<LPBYTE>(value), &size) == ERROR_SUCCESS &&
+        (type == REG_SZ || type == REG_EXPAND_SZ))
+        command.assign(value, size / sizeof(wchar_t));
+    RegCloseKey(key);
+    while (!command.empty() && command.back() == L'\0') command.pop_back();
+    return command;
+}
+
+bool write_startup_command(const std::wstring& command) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
+        ERROR_SUCCESS)
+        return false;
+    LONG result = RegSetValueExW(key, kRunValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(command.c_str()),
+                                 static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS;
+}
+
+bool write_startup(bool on) {
+    if (on) return write_startup_command(startup_command());
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
+        ERROR_SUCCESS)
+        return false;
+    LONG result = RegDeleteValueW(key, kRunValue);
+    RegCloseKey(key);
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+// Only corrects the program path of the entry, in case the program has been
+// moved to another folder since the entry was made. The options chosen then
+// are kept.
+void refresh_startup() {
+    std::wstring entry = startup_entry();
+    if (entry.empty()) return;
+    size_t end;
+    if (entry[0] == L'"') {
+        end = entry.find(L'"', 1);
+        end = end == std::wstring::npos ? entry.size() : end + 1;
+    } else {
+        end = entry.find(L' ');
+        if (end == std::wstring::npos) end = entry.size();
+    }
+    std::wstring command = L"\"" + exe_path() + L"\"";
+    if (end < entry.size()) command += entry.substr(end);
+    if (command != entry) write_startup_command(command);
+}
+
+// The Start menu shortcut
+//
+// A shortcut in the per-user Start menu folder makes the program easy to find
+// by typing its name in the Start menu. (Windows search reads that folder.)
+
+const wchar_t kShortcutName[] = L"VRChat チャット入力.lnk";
+
+std::wstring start_menu_shortcut() {
+    PWSTR folder = nullptr;
+    std::wstring path;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr, &folder))) {
+        path = folder;
+        CoTaskMemFree(folder);
+        path += L"\\";
+        path += kShortcutName;
+    }
+    return path;
+}
+
+bool shortcut_exists() {
+    std::wstring path = start_menu_shortcut();
+    return !path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool write_shortcut(bool on) {
+    std::wstring path = start_menu_shortcut();
+    if (path.empty()) return false;
+    if (!on) return DeleteFileW(path.c_str()) != FALSE || GetLastError() == ERROR_FILE_NOT_FOUND;
+
+    std::wstring exe = exe_path();
+    ComPtr<IShellLinkW> link;
+    ComPtr<IPersistFile> file;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) return false;
+    link->SetPath(exe.c_str());
+    size_t slash = exe.find_last_of(L'\\');
+    std::wstring folder = slash == std::wstring::npos ? std::wstring() : exe.substr(0, slash);
+    link->SetWorkingDirectory(folder.c_str());
+    if (!g_arguments.empty()) link->SetArguments(g_arguments.c_str());
+    link->SetDescription(L"VRChat のチャットボックスに、どの IME でも入力する");
+    link->SetIconLocation(exe.c_str(), 0);
+    return SUCCEEDED(link.As(&file)) && SUCCEEDED(file->Save(path.c_str(), TRUE));
+}
+
+// Turns the trigger key on and off, from the tray menu or Ctrl+Alt+Y, and
+// says so in a balloon tip: with the key off, Y does nothing in this program.
+void set_enabled(bool on) {
+    g_enabled = on;
+    show_balloon(on ? L"Y キーでチャット入力をひらきます"
+                    : L"Y キーはそのまま VRChat にとどきます。もう一度 Ctrl+Alt+Y でもどります",
+                 on ? kTitle : L"VRChat チャット入力（Y キーはオフ）");
+}
+
 void show_tray_menu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | (g_enabled ? MF_CHECKED : 0), ID_TRAY_ENABLED, L"Y キーでチャット入力をひらく");
+    AppendMenuW(menu, MF_STRING | (g_enabled ? MF_CHECKED : 0), ID_TRAY_ENABLED,
+                L"Y キーでチャット入力をひらく\tCtrl+Alt+Y");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    bool startup = !startup_entry().empty();
+    AppendMenuW(menu, MF_STRING | (startup ? MF_CHECKED : 0), ID_TRAY_STARTUP, L"Windows と一緒に起動");
+    bool shortcut = shortcut_exists();
+    AppendMenuW(menu, MF_STRING | (shortcut ? MF_CHECKED : 0), ID_TRAY_SHORTCUT, L"スタートメニューに登録");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_TRAY_QUIT, L"終了");
     POINT pt;
@@ -364,7 +548,23 @@ void show_tray_menu(HWND hwnd) {
     UINT id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
     if (id == ID_TRAY_ENABLED) {
-        g_enabled = !g_enabled;
+        set_enabled(!g_enabled);
+    } else if (id == ID_TRAY_STARTUP) {
+        bool on = startup_entry().empty();
+        if (!write_startup(on)) {
+            show_balloon(L"自動起動の設定を変えられませんでした");
+        } else {
+            show_balloon(on ? L"次に Windows にサインインしたときから、自動で動きます"
+                            : L"Windows と一緒には起動しません");
+        }
+    } else if (id == ID_TRAY_SHORTCUT) {
+        bool on = !shortcut_exists();
+        if (!write_shortcut(on)) {
+            show_balloon(L"スタートメニューに登録できませんでした");
+        } else {
+            show_balloon(on ? L"スタートメニューに「VRChat チャット入力」を登録しました"
+                            : L"スタートメニューからはずしました");
+        }
     } else if (id == ID_TRAY_QUIT) {
         DestroyWindow(hwnd);
     }
@@ -374,6 +574,12 @@ LRESULT CALLBACK popup_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_APP_SHOW:
             show_popup(reinterpret_cast<HWND>(lparam));
+            return 0;
+        case WM_APP_TOGGLE:
+            set_enabled(!g_enabled);
+            return 0;
+        case WM_APP_ALREADY_RUNNING:
+            show_balloon(L"すでに起動しています。通知領域のアイコンから操作できます");
             return 0;
         case WM_ACTIVATE:
             // Clicking elsewhere cancels, as Esc does.
@@ -402,30 +608,70 @@ LRESULT CALLBACK popup_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 void parse_options() {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    for (int i = 1; i < argc; ++i) {
-        std::wstring a = argv[i];
-        if (a == L"--target" && i + 1 < argc) {
-            g_options.target = argv[++i];
-        } else if (a == L"--port" && i + 1 < argc) {
-            g_options.port = _wtoi(argv[++i]);
+    std::vector<std::wstring> args;
+    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+    LocalFree(argv);
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::wstring& a = args[i];
+        if (a == L"--target" && i + 1 < args.size()) {
+            g_options.target = args[++i];
+        } else if (a == L"--port" && i + 1 < args.size()) {
+            g_options.port = _wtoi(args[++i].c_str());
         } else if (a == L"--no-cursor-check") {
             g_options.cursor_check = false;
         } else if (a == L"--no-ime-open") {
             g_options.ime_open = false;
         } else if (a == L"--keep-ime") {
             g_options.hiragana_ime = false;
+        } else if (a == L"--startup") {
+            g_options.startup = true;
+        } else if (a == L"--no-startup") {
+            g_options.no_startup = true;
+        } else if (a == L"--start-menu") {
+            g_options.start_menu = true;
+        } else if (a == L"--no-start-menu") {
+            g_options.no_start_menu = true;
         }
     }
-    LocalFree(argv);
+    // Keep the options as they were given, so the sign-in entry and the Start
+    // menu shortcut start the program the same way. The four below are for
+    // that setup only; the copy started from it must not see them, or it
+    // would exit at once.
+    for (const auto& a : args) {
+        if (a == L"--startup" || a == L"--no-startup" || a == L"--start-menu" || a == L"--no-start-menu") continue;
+        if (!g_arguments.empty()) g_arguments += L' ';
+        g_arguments += L"\"" + a + L"\"";
+    }
 }
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\VRChatChatboxInput");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
     g_instance = instance;
     parse_options();
+    if (g_options.startup) return write_startup(true) ? 0 : 1;
+    if (g_options.no_startup) return write_startup(false) ? 0 : 1;
+    if (g_options.start_menu || g_options.no_start_menu) {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        bool ok = write_shortcut(g_options.start_menu);
+        CoUninitialize();
+        return ok ? 0 : 1;
+    }
+
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\VRChatChatboxInput");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // A second copy: tell the one that is already running to say so, so
+        // that a double click on the icon is not just silence.
+        HWND existing = nullptr;
+        for (int i = 0; i < 10 && !existing; ++i) {
+            existing = FindWindowW(L"VRChatChatboxInput", nullptr);
+            if (!existing) Sleep(100);
+        }
+        if (existing) PostMessageW(existing, WM_APP_ALREADY_RUNNING, 0, 0);
+        CloseHandle(mutex);
+        return 0;
+    }
+    refresh_startup();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     WSADATA wsa;
